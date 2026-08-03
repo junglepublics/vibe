@@ -489,11 +489,36 @@ function findSlot_(winS, winE, dur, busy, prefer) {
 
 // ─── SLACK STATUS ───────────────────────────────────────────────────────────────
 
+// Zero-width marker appended to statuses the script sets, so it can tell its own
+// statuses apart from ones you set manually. Invisible in Slack.
+var SLACK_MARK_ = '\u200B';
+
+function slackGetStatus_(token) {
+  try {
+    var r = UrlFetchApp.fetch('https://slack.com/api/users.profile.get', {
+      method:'get',
+      headers:{ 'Authorization':'Bearer '+token },
+      muteHttpExceptions:true
+    });
+    var j = JSON.parse(r.getContentText());
+    if (j.ok && j.profile) return { text:j.profile.status_text || '', emoji:j.profile.status_emoji || '' };
+  } catch(e) {}
+  return null;
+}
+
 function updateSlackStatus() {
   var cfg = loadConfig_();
   if (!cfg.slackToken) return { error:'No Slack token in Settings.' };
   var wc = CalendarApp.getCalendarById(cfg.workCalendarId);
   if (!wc) return { error:'Cannot access work calendar.' };
+
+  // If YOU have set a status manually, don't touch it. Only overwrite statuses
+  // the script itself set (tagged with an invisible marker) or an empty status.
+  var existing = slackGetStatus_(cfg.slackToken);
+  if (existing && existing.text && existing.text.indexOf(SLACK_MARK_) === -1) {
+    setLastRun_('slack');
+    return { ok:true, msg:'Left your manual status untouched: '+existing.emoji+' '+existing.text };
+  }
 
   var now = new Date(), soon = new Date(now.getTime()+60000);
   var t = now.getHours() + now.getMinutes()/60;
@@ -528,7 +553,7 @@ function updateSlackStatus() {
     var r = UrlFetchApp.fetch('https://slack.com/api/users.profile.set', {
       method:'post',
       headers:{ 'Authorization':'Bearer '+cfg.slackToken, 'Content-Type':'application/json; charset=utf-8' },
-      payload:JSON.stringify({ profile:{ status_text:text, status_emoji:emoji, status_expiration:exp } }),
+      payload:JSON.stringify({ profile:{ status_text:(text ? text + SLACK_MARK_ : ''), status_emoji:emoji, status_expiration:exp } }),
       muteHttpExceptions:true
     });
     var j = JSON.parse(r.getContentText());
