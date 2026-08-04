@@ -157,6 +157,12 @@ input.wide{width:220px}input.kw{width:280px}
       <div class="psub">Each category maps to a Google Calendar colour. Default is left native (your calendar's amethyst base). Click a swatch to change a category.</div>
       <div class="card"><div class="ctitle">Category colours</div><div id="cat-rows"></div></div>
       <div class="card"><div class="ctitle">Classification keywords</div><div id="kw-rows"></div></div>
+      <div class="card">
+        <div class="ctitle">Per-event exceptions</div>
+        <div style="font-size:13px;color:var(--muted);line-height:1.6">
+          Add <code style="background:var(--bg);padding:1px 6px;border-radius:4px;font-family:'SF Mono',monospace">#exception</code> anywhere in an event's description to skip keyword rules for that one event and colour it purely by who's attending instead. Useful for a lunch <em>meeting</em> that would otherwise be caught by the "lunch" keyword and turn grey.
+        </div>
+      </div>
       <div class="progress"><div class="pfill" id="color-prog"></div></div>
       <div class="btn-row">
         <button class="btn btn-primary" id="btn-color" onclick="doColour()">▶ Apply colours</button>
