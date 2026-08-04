@@ -322,7 +322,8 @@ function runColorCoding() {
     var title = ev.getTitle().toLowerCase();
     var emails = attendeeEmails_(cfg.workCalendarId, ev, me);
     var hasConf = hasConferenceLink_(cfg.workCalendarId, ev);
-    var cls = classify_(title, emails, cfg, hasConf);
+    var exception = hasExceptionTag_(ev);
+    var cls = classify_(title, emails, cfg, hasConf, exception);
 
     try {
       var applied = setEventColor_(cfg.workCalendarId, ev, cls.color);
@@ -364,13 +365,20 @@ function attendeeEmails_(calendarId, ev, me) {
 // STRUCTURE-FIRST CLASSIFICATION
 // Reliable signal for meeting-type is WHO is in it, not what it's called.
 // hasConf = event has a Teams/Zoom link (we never use those internally, so it's external).
-function classify_(title, emails, cfg, hasConf) {
+// Add "#exception" anywhere in an event's description to skip keyword-based
+// classification for that one event and classify it purely by attendees instead.
+// Handy for one-offs like a lunch MEETING that would otherwise be caught by the
+// "lunch" hold keyword and coloured grey instead of by who's actually in it.
+function classify_(title, emails, cfg, hasConf, exception) {
   var k = cfg.keywords, c = cfg.colors;
 
   // 1. Unambiguous personal-intent blocks — override even if attendees exist
-  if (kw_(title, k.focus))    return { color:c.focus,    reason:'focus keyword' };
-  if (kw_(title, k.hold))     return { color:c.hold,     reason:'hold keyword' };
-  if (kw_(title, k.reminder)) return { color:c.reminder, reason:'reminder keyword' };
+  //    (skipped entirely when the event is tagged #exception)
+  if (!exception) {
+    if (kw_(title, k.focus))    return { color:c.focus,    reason:'focus keyword' };
+    if (kw_(title, k.hold))     return { color:c.hold,     reason:'hold keyword' };
+    if (kw_(title, k.reminder)) return { color:c.reminder, reason:'reminder keyword' };
+  }
 
   // 2. Teams/Zoom link → external (we only use those with outside parties)
   if (hasConf) return { color:c.external, reason:'Teams/Zoom link → external' };
@@ -379,15 +387,23 @@ function classify_(title, emails, cfg, hasConf) {
   if (emails.length) {
     var ext = 0, intl = 0;
     emails.forEach(function(e){ if (e.indexOf('@'+cfg.workDomain) !== -1) intl++; else ext++; });
-    if (ext)  return { color:c.external, reason:ext +' external attendee(s)' };
-    return { color:c.team, reason:intl +' DML attendee(s)' };
+    if (ext)  return { color:c.external, reason:(exception?'#exception, ':'')+ext +' external attendee(s)' };
+    return { color:c.team, reason:(exception?'#exception, ':'')+intl +' DML attendee(s)' };
   }
 
-  // 4. No attendees → solo block. Title keywords are now safe.
-  if (kw_(title, k.priority))   return { color:c.priority,   reason:'priority keyword (solo)' };
-  if (kw_(title, k.nonmeeting)) return { color:c.nonmeeting, reason:'non-meeting keyword (solo)' };
+  // 4. No attendees → solo block. Title keywords are safe (unless excepted).
+  if (!exception) {
+    if (kw_(title, k.priority))   return { color:c.priority,   reason:'priority keyword (solo)' };
+    if (kw_(title, k.nonmeeting)) return { color:c.nonmeeting, reason:'non-meeting keyword (solo)' };
+  }
 
-  return { color:c.default, reason:'solo, no keyword match' };
+  return { color:c.default, reason: exception ? '#exception, no attendees' : 'solo, no keyword match' };
+}
+
+// Checks the event description for the exception marker.
+function hasExceptionTag_(ev) {
+  var desc = (ev.getDescription() || '').toLowerCase();
+  return desc.indexOf('#exception') !== -1;
 }
 
 // Whole-token keyword match. A keyword matches only if it appears as a complete
