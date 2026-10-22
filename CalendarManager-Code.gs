@@ -624,7 +624,7 @@ function runLunchScheduler() {
       var s = startMs_(ev), e = endMs_(ev);
       if (e <= winS || s >= winE) return;
       if (isManagedLunch_(ev)) { lunches.push(ev); return; }
-      if (isLunchTitle_(titleOf_(ev), cfg) && isAccepted_(ev)) lunchMeeting = ev;
+      if (isLunchTitle_(titleOf_(ev), cfg) && myResponse_(ev) !== 'declined') lunchMeeting = ev;   // any lunch you haven't declined covers the day
       var isFocus = kw_(titleOf_(ev).toLowerCase(), cfg.keywords.focus);
       if (isAccepted_(ev) && !isFocus) busy.push({ start:s, end:e });
     });
