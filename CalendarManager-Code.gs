@@ -33,7 +33,31 @@ var GC_PALETTE_ = [
 
 // ─── CONFIG ────────────────────────────────────────────────────────────────
 
+// Rules are checked top to bottom; the first one whose keywords match the title wins.
+// guests:true  = applies even when other people are invited
+// guests:false = applies only to solo events (no guests)
+// Events no rule matches are coloured by who is invited (external / team) or the default.
+function legacyRules_(cfg) {
+  var k = cfg.keywords, c = cfg.colors;
+  var holdWords = String(k.hold || '').split(',').map(function(s){ return s.trim(); })
+    .filter(function(s){ return s && s.toLowerCase() !== 'lunch'; }).join(', ');
+  return [
+    { id:'lunch',      name:'Lunch',         keywords:k.lunch || 'lunch, lunches, lunching', color:(cfg.lunch && cfg.lunch.color) || 'YELLOW', guests:true  },
+    { id:'focus',      name:'Focus time',    keywords:k.focus,      color:c.focus,      guests:true  },
+    { id:'hold',       name:'Hold / Busy',   keywords:holdWords,    color:c.hold,       guests:false },
+    { id:'reminder',   name:'Reminder',      keywords:k.reminder,   color:c.reminder,   guests:true  },
+    { id:'priority',   name:'Priority',      keywords:k.priority,   color:c.priority,   guests:false },
+    { id:'nonmeeting', name:'Events & talks', keywords:k.nonmeeting, color:c.nonmeeting, guests:true  }
+  ];
+}
+
 function getDefaultConfig_() {
+  var def = getDefaultConfigBase_();
+  def.rules = legacyRules_(def);
+  return def;
+}
+
+function getDefaultConfigBase_() {
   return {
     personalCalendarId: 'prateek.shankar@gmail.com',
     workCalendarId:     'prateek@darkmatterlabs.org',
@@ -44,7 +68,8 @@ function getDefaultConfig_() {
       focus:      'focus, deep work',
       priority:   'flight, aic, urgent, visa, appointment, passport',
       nonmeeting: 'lecture, webinar, benjamin, glacier dialogue, tvgf, sparks of regeneration, cl7, cc6, disclosure day',
-      hold:       'busy, hold, block, tentative, booked, lunch',
+      lunch:      'lunch, lunches, lunching',
+      hold:       'busy, hold, block, tentative, booked',
       reminder:   'reminder, remind'
     },
     // Each category maps to one of Google Calendar's named colours (the only
@@ -95,6 +120,11 @@ function loadConfig_() {
     if (saved.lunch.color && saved.lunch.color.charAt(0) === '#') {
       saved.lunch.color = nearestPaletteName_(saved.lunch.color);
     }
+    if (!Array.isArray(saved.rules)) saved.rules = legacyRules_(saved);
+    saved.rules = saved.rules.map(function(r, i) {
+      return { id: r.id || ('custom' + i), name: r.name || 'Rule', keywords: r.keywords || '',
+               color: resolveColorName_(r.color), guests: !!r.guests };
+    });
     return Object.assign(def, saved);
   } catch(e) {
     return def;
@@ -168,6 +198,21 @@ function saveSettingsFromUI(data) {
   if (data.colors)   cfg.colors   = Object.assign(cfg.colors,   data.colors);
   if (data.lunch)    cfg.lunch    = Object.assign(cfg.lunch,    data.lunch);
   if (data.workHours) cfg.workHours = Object.assign(cfg.workHours, data.workHours);
+  if (Array.isArray(data.rules)) {
+    var seen = {};
+    cfg.rules = data.rules.map(function(r, i) {
+      var id = String(r.id || ('custom' + i));
+      while (seen[id]) id += '_';
+      seen[id] = true;
+      return { id:id, name:String(r.name || 'Rule').slice(0, 40), keywords:String(r.keywords || ''),
+               color:resolveColorName_(r.color), guests:!!r.guests };
+    });
+    // Keep the older single-purpose settings in step with the rules that drive them
+    cfg.rules.forEach(function(r) {
+      if (cfg.keywords.hasOwnProperty(r.id)) cfg.keywords[r.id] = r.keywords;
+      if (r.id === 'lunch') cfg.lunch.color = r.color;
+    });
+  }
   saveConfig_(cfg);
   return { ok: true };
 }
@@ -177,6 +222,8 @@ function resetColorsToDefaults() {
   var cfg = loadConfig_();
   var def = getDefaultConfig_();
   cfg.colors = def.colors;
+  cfg.keywords = def.keywords;
+  cfg.rules = def.rules;
   cfg.lunch.color = def.lunch.color;
   saveConfig_(cfg);
   return { ok:true, colors:cfg.colors };
@@ -201,6 +248,12 @@ var COLOR_IDS_ = { PALE_BLUE:'1', PALE_GREEN:'2', MAUVE:'3', PALE_RED:'4', YELLO
                    ORANGE:'6', CYAN:'7', GRAY:'8', BLUE:'9', GREEN:'10', RED:'11' };
 var VALID_COLOR_NAMES_ = Object.keys(COLOR_IDS_);
 var NO_NOTIFY_ = { sendUpdates:'none' };
+
+// Event colourId back to the named colour ('NONE' = native calendar colour)
+function nameFromColorId_(id) {
+  for (var n in COLOR_IDS_) if (COLOR_IDS_[n] === String(id || '')) return n;
+  return 'NONE';
+}
 
 // Kept only for migrating legacy hex configs to named colours.
 function nearestPaletteName_(hex) {
@@ -267,6 +320,12 @@ function isAccepted_(ev) { var r = myResponse_(ev); return r === 'owner' || r ==
 function hasException_(ev) { return /#exception/i.test(descOf_(ev)); }
 
 // The Lunch block this script creates (not a lunch *meeting* someone else made).
+// Any title that matches the Lunch rule's keywords (default: lunch, lunches, lunching).
+function lunchKeywords_(cfg) {
+  var r = (cfg.rules || []).filter(function(x) { return x.id === 'lunch'; })[0];
+  return r ? r.keywords : 'lunch, lunches, lunching';
+}
+function isLunchTitle_(t, cfg) { return kw_(String(t || '').toLowerCase(), lunchKeywords_(cfg)); }
 function isManagedLunch_(ev) { return titleOf_(ev) === 'Lunch' && descOf_(ev).indexOf('lunch-block') !== -1; }
 
 function isSyncedBusy_(ev) { return titleOf_(ev) === 'Busy' && descOf_(ev).indexOf('synced:') === 0; }
@@ -419,11 +478,11 @@ function classifyEvent_(ev, cfg) {
 }
 
 // Dry run for the UI: how the next 7 days WOULD be coloured, with nothing written.
-function getPreview() {
+function getPreview(nDays) {
   var cfg = loadConfig_(), tz = Session.getScriptTimeZone();
   var now = new Date();
   var from = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  var to = new Date(from.getTime() + 7*86400000);
+  var to = new Date(from.getTime() + (parseInt(nDays) || 7)*86400000);
   var events;
   try { events = listEvents_(cfg.workCalendarId, from, to); }
   catch(e) { return { error:'Cannot read work calendar. (' + e.message + ')' }; }
@@ -444,6 +503,7 @@ function getPreview() {
       color:  resolveColorName_(cls.color),
       cat:    cls.cat,
       reason: cls.reason,
+      current: nameFromColorId_(ev.colorId),
       change: (ev.colorId || '') !== colorId_(cls.color),
       past:   e.getTime() < now.getTime()
     });
@@ -451,58 +511,54 @@ function getPreview() {
   return { days:days, today:Utilities.formatDate(now, tz, 'yyyy-MM-dd') };
 }
 
-// STRUCTURE-FIRST CLASSIFICATION
-// Reliable signal for meeting-type is WHO is in it, not what it's called.
-// So: unambiguous personal-intent keywords (focus, reminder) win first, and the
-// hold keywords (incl. 'lunch') win only for solo blocks; then anything WITH
-// attendees is a meeting, classified by participants (external beats team); only
-// events WITHOUT attendees fall back to the remaining keyword categories
-// (priority, non-meeting) and finally default.
+// CLASSIFICATION
+// 1. Rules (Settings > Rules in the UI) are checked top to bottom; the first whose
+//    keywords match the title wins. A rule marked "guests" applies even when other
+//    people are invited; otherwise it only applies to solo events.
+//    Lunch always applies, even to events marked #exception.
+// 2. Otherwise WHO is invited decides: a Teams/Zoom link or any outside guest is
+//    external, DML-only guests is team, and a solo event with no rule match is default.
 // hasConf = event has a Teams/Zoom link (we never use those internally, so it's external).
-// exception = event description contains #exception, so all keyword rules are skipped.
+// exception = event description contains #exception, so all rules except Lunch are skipped.
 function classify_(title, emails, cfg, hasConf, exception) {
-  var k = cfg.keywords, c = cfg.colors;
+  var c = cfg.colors, solo = !emails.length;
 
-  // 1. Personal-intent blocks. 'hold' words only count when nobody else is invited,
-  //    so a lunch *meeting* is coloured by its attendees like any other meeting.
-  if (!exception) {
-    if (kw_(title, k.focus))                     return { cat:'focus', color:c.focus,    reason:'focus keyword' };
-    if (!emails.length && kw_(title, k.hold))    return { cat:'hold', color:c.hold,     reason:'hold keyword (solo)' };
-    if (kw_(title, k.reminder))                  return { cat:'reminder', color:c.reminder, reason:'reminder keyword' };
+  var rules = cfg.rules || [];
+  for (var i = 0; i < rules.length; i++) {
+    var r = rules[i];
+    if (exception && r.id !== 'lunch') continue;
+    if (!r.guests && !solo) continue;
+    var hit = kwMatch_(title, r.keywords);
+    if (hit) return { cat:r.name, color:r.color, reason:'“' + hit + '” → ' + r.name };
   }
 
-  // 2. Teams/Zoom link → external (we only use those with outside parties)
-  if (hasConf) return { cat:'external', color:c.external, reason:'Teams/Zoom link → external' };
+  if (hasConf) return { cat:'External', color:c.external, reason:'Teams/Zoom link → external' };
 
-  // 3. Has attendees → MEETING. Classify by WHO.
   if (emails.length) {
     var ext = 0, intl = 0;
     emails.forEach(function(e){ if (e.indexOf('@'+cfg.workDomain) !== -1) intl++; else ext++; });
-    if (ext)  return { cat:'external', color:c.external, reason:ext +' external attendee(s)' };
-    return { cat:'team', color:c.team, reason:intl +' DML attendee(s)' };
+    if (ext)  return { cat:'External', color:c.external, reason:ext +' external attendee(s)' };
+    return { cat:'DML team', color:c.team, reason:intl +' DML attendee(s)' };
   }
 
-  // 4. No attendees → solo block. Title keywords are now safe.
-  if (!exception) {
-    if (kw_(title, k.priority))   return { cat:'priority', color:c.priority,   reason:'priority keyword (solo)' };
-    if (kw_(title, k.nonmeeting)) return { cat:'nonmeeting', color:c.nonmeeting, reason:'non-meeting keyword (solo)' };
-  }
-
-  return { cat:'default', color:c.default, reason: exception ? 'solo, #exception' : 'solo, no keyword match' };
+  return { cat:'Default', color:c.default, reason: exception ? 'solo, #exception' : 'solo, no rule matched' };
 }
 
 // Whole-token keyword match. A keyword matches only if it appears as a complete
 // token in the title (bounded by start/end of string or any non-alphanumeric char),
 // so 'cl7' won't match inside 'particle' and 'review' won't match 'reviewer'.
 // Multi-word keywords like 'glacier dialogue' are matched as a phrase.
-function kw_(text, str) {
-  if (!str) return false;
-  var terms = str.toLowerCase().split(',').map(function(s){ return s.trim(); }).filter(Boolean);
-  return terms.some(function(t) {
-    var esc = t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return new RegExp('(^|[^a-z0-9])' + esc + '([^a-z0-9]|$)', 'i').test(text);
-  });
+// Returns the keyword that matched ('' if none).
+function kwMatch_(text, str) {
+  if (!str) return '';
+  var terms = String(str).toLowerCase().split(',').map(function(s){ return s.trim(); }).filter(Boolean);
+  for (var i = 0; i < terms.length; i++) {
+    var esc = terms[i].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (new RegExp('(^|[^a-z0-9])' + esc + '([^a-z0-9]|$)', 'i').test(text)) return terms[i];
+  }
+  return '';
 }
+function kw_(text, str) { return !!kwMatch_(text, str); }
 
 // ─── LUNCH SCHEDULER ───────────────────────────────────────────────────────────
 // A slot is BUSY only if it's an accepted meeting (yours/accepted) that is NOT focus time.
@@ -530,14 +586,21 @@ function runLunchScheduler() {
     var winS = dStart.getTime(), winE = dEnd.getTime();
     if (winE <= nowMs) continue;                                   // window already over
 
-    var lunches = [], busy = [];
+    var lunches = [], busy = [], lunchMeeting = null;
     timed.forEach(function(ev) {
       var s = startMs_(ev), e = endMs_(ev);
       if (e <= winS || s >= winE) return;
       if (isManagedLunch_(ev)) { lunches.push(ev); return; }
+      if (isLunchTitle_(titleOf_(ev), cfg) && isAccepted_(ev)) lunchMeeting = ev;
       var isFocus = kw_(titleOf_(ev).toLowerCase(), cfg.keywords.focus);
       if (isAccepted_(ev) && !isFocus) busy.push({ start:s, end:e });
     });
+    // A lunch already on the calendar (e.g. a shared lunch) is the day's lunch: no extra block.
+    if (lunchMeeting) {
+      lunches.forEach(function(x) { try { Calendar.Events.remove(cfg.workCalendarId, x.id, NO_NOTIFY_); } catch(err) {} });
+      res.log.push({type:'ok', msg:Utilities.formatDate(dStart, Session.getScriptTimeZone(), 'EEE dd MMM')+': '+titleOf_(lunchMeeting)+' covers lunch'});
+      continue;
+    }
     var existing = lunches.shift() || null;
     lunches.forEach(function(x) { try { Calendar.Events.remove(cfg.workCalendarId, x.id, NO_NOTIFY_); } catch(e) {} });  // duplicates
 
