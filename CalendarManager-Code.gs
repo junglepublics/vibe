@@ -47,13 +47,41 @@ function legacyRules_(cfg) {
     { id:'hold',       name:'Hold / Busy',   keywords:holdWords,    color:c.hold,       guests:false },
     { id:'reminder',   name:'Reminder',      keywords:k.reminder,   color:c.reminder,   guests:true  },
     { id:'priority',   name:'Priority',      keywords:k.priority,   color:c.priority,   guests:false },
-    { id:'nonmeeting', name:'Events & talks', keywords:k.nonmeeting, color:c.nonmeeting, guests:true  }
+    { id:'nonmeeting', name:'Events & talks', keywords:k.nonmeeting, color:c.nonmeeting, guests:true  },
+    { id:'recreation', name:'Recreation',    keywords:RECREATION_WORDS_, color:'YELLOW', guests:true }
   ];
+}
+
+// Blue = workshops, seminars, conferences and similar. Yellow = recreational events.
+var EVENT_WORDS_      = 'workshop, workshops, seminar, seminars, webinar, webinars, conference, conferences, summit, symposium, masterclass, keynote, lecture';
+var RECREATION_WORDS_ = 'dinner, drinks, party, birthday, gym, yoga, run, climbing, football, tennis, swim, concert, cinema, movie, hike, brunch';
+
+function mergeWords_(a, b) {
+  var out = [], seen = {};
+  (String(a || '') + ',' + String(b || '')).split(',').forEach(function(w) {
+    w = w.trim().toLowerCase();
+    if (w && !seen[w]) { seen[w] = true; out.push(w); }
+  });
+  return out.join(', ');
+}
+
+// One-off upgrade of rules saved before version 2: add the event words to the
+// blue rule and add a yellow Recreation rule. Later edits in the UI are kept.
+function upgradeRules_(saved) {
+  if ((saved.rulesVersion || 0) >= 2) return;
+  var nm = saved.rules.filter(function(r) { return r.id === 'nonmeeting'; })[0];
+  if (nm) { nm.keywords = mergeWords_(nm.keywords, EVENT_WORDS_); nm.guests = true; }
+  if (!saved.rules.some(function(r) { return r.id === 'recreation'; })) {
+    saved.rules.push({ id:'recreation', name:'Recreation', keywords:RECREATION_WORDS_, color:'YELLOW', guests:true });
+  }
+  saved.rulesVersion = 2;
 }
 
 function getDefaultConfig_() {
   var def = getDefaultConfigBase_();
   def.rules = legacyRules_(def);
+  def.rules.forEach(function(r) { if (r.id === 'nonmeeting') r.keywords = mergeWords_(r.keywords, EVENT_WORDS_); });
+  def.rulesVersion = 2;
   return def;
 }
 
@@ -125,6 +153,7 @@ function loadConfig_() {
       return { id: r.id || ('custom' + i), name: r.name || 'Rule', keywords: r.keywords || '',
                color: resolveColorName_(r.color), guests: !!r.guests };
     });
+    upgradeRules_(saved);
     return Object.assign(def, saved);
   } catch(e) {
     return def;
