@@ -557,6 +557,39 @@ function getPreview(nDays) {
   return { days:days, today:Utilities.formatDate(now, tz, 'yyyy-MM-dd') };
 }
 
+// Events that carry #exception, or a rule's tag such as #recreation, in the title or
+// description, so you can see every manual override in one place.
+function getExceptions(nDays) {
+  var cfg = loadConfig_(), tz = Session.getScriptTimeZone();
+  var now = new Date(), from = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  var to = new Date(from.getTime() + (parseInt(nDays) || 60)*86400000);
+  var events;
+  try { events = listEvents_(cfg.workCalendarId, from, to); }
+  catch(e) { return { error:'Cannot read work calendar. (' + e.message + ')' }; }
+
+  var days = [], byKey = {}, count = 0;
+  events.forEach(function(ev) {
+    if (!isTimed_(ev) || (ev.eventType && ev.eventType !== 'default' && ev.eventType !== 'focusTime')) return;
+    var text = (titleOf_(ev) + ' ' + descOf_(ev)).toLowerCase();
+    var exc = hasException_(ev), tagRule = null;
+    (cfg.rules || []).forEach(function(r) { if (!tagRule && hasTag_(text, r.tag)) tagRule = r; });
+    if (!exc && !tagRule) return;
+    var s = new Date(ev.start.dateTime), e = new Date(ev.end.dateTime);
+    var key = Utilities.formatDate(s, tz, 'yyyy-MM-dd');
+    if (!byKey[key]) { byKey[key] = { key:key, label:Utilities.formatDate(s, tz, 'EEEE d MMM'), events:[] }; days.push(byKey[key]); }
+    var cls = classifyEvent_(ev, cfg);
+    count++;
+    byKey[key].events.push({
+      time:  Utilities.formatDate(s, tz, 'HH:mm') + '–' + Utilities.formatDate(e, tz, 'HH:mm'),
+      title: titleOf_(ev) || '(no title)',
+      kind:  tagRule ? '#' + tagRule.tag : '#exception',
+      color: resolveColorName_(cls.color),
+      reason: cls.reason,
+      past:  e.getTime() < now.getTime()
+    });
+  });
+  return { days:days, count:count, range:parseInt(nDays) || 60 };
+}
 // CLASSIFICATION
 // 1. Rules (Settings > Rules in the UI) are checked top to bottom; the first whose
 //    keywords match the title wins. A rule marked "guests" applies even when other

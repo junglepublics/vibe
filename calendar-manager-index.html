@@ -226,6 +226,7 @@ body.has-save .toast{bottom:84px}
     <div class="tabs" role="tablist" aria-label="Sections" id="tabs">
       <button class="tab" role="tab" id="t-schedule" data-tab="schedule" aria-selected="true">Schedule<span class="badge" id="pending-badge" hidden>0</span></button>
       <button class="tab" role="tab" id="t-rules" data-tab="rules" aria-selected="false">Colour rules</button>
+      <button class="tab" role="tab" id="t-exceptions" data-tab="exceptions" aria-selected="false">Exceptions<span class="badge" id="exc-badge" hidden>0</span></button>
       <button class="tab" role="tab" id="t-lunch" data-tab="lunch" aria-selected="false">Lunch</button>
       <button class="tab" role="tab" id="t-accounts" data-tab="accounts" aria-selected="false">Accounts</button>
       <button class="tab" role="tab" id="t-activity" data-tab="activity" aria-selected="false">Activity</button>
@@ -296,6 +297,15 @@ body.has-save .toast{bottom:84px}
     </div>
     <div style="margin-top:12px"><button class="btn sm danger" id="btn-reset">↺ Reset rules and colours to defaults</button></div>
   </div>
+</section>
+
+<!-- ============ EXCEPTIONS ============ -->
+<section id="p-exceptions" role="tabpanel" aria-labelledby="t-exceptions" hidden>
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap"><h2 style="margin:0">Exceptions</h2><span class="spacer"></span>
+    <div class="seg" role="group" aria-label="Range"><button id="x-30" aria-pressed="false">30 days</button><button id="x-60" aria-pressed="true">60 days</button><button id="x-90" aria-pressed="false">90 days</button></div>
+    <button class="btn sm" id="btn-exc" aria-label="Refresh exceptions">↻ Refresh</button></div>
+  <p class="lead">Events you've overridden by hand: ones with <code>#exception</code> (no keyword rules apply) or a rule's tag such as <code>#recreation</code> (that rule's colour is forced), in the title or description.</p>
+  <div id="exceptions"></div>
 </section>
 
 <!-- ============ LUNCH ============ -->
@@ -400,7 +410,7 @@ function recall(k){try{return sessionStorage.getItem(k)}catch(e){return null}}
 /* ============================================================ tabs */
 function showTab(t,focus){
   tab=t;store('cm-tab',t);
-  ['schedule','rules','lunch','accounts','activity'].forEach(function(n){
+  ['schedule','rules','exceptions','lunch','accounts','activity'].forEach(function(n){
     $('p-'+n).hidden=(n!==t);
     var b=$('t-'+n);b.setAttribute('aria-selected',n===t?'true':'false');b.tabIndex=(n===t?0:-1);
   });
@@ -409,7 +419,7 @@ function showTab(t,focus){
 }
 $('tabs').addEventListener('click',function(e){var b=e.target.closest('.tab');if(b)showTab(b.dataset.tab)});
 $('tabs').addEventListener('keydown',function(e){
-  var order=['schedule','rules','lunch','accounts','activity'],i=order.indexOf(tab);
+  var order=['schedule','rules','exceptions','lunch','accounts','activity'],i=order.indexOf(tab);
   if(e.key==='ArrowRight'){showTab(order[(i+1)%order.length],true);e.preventDefault()}
   if(e.key==='ArrowLeft'){showTab(order[(i+order.length-1)%order.length],true);e.preventDefault()}
 });
@@ -451,7 +461,7 @@ function runJob(j,done){
     .withFailureHandler(function(e){running[j.id]=false;log(j.name+': '+e.message,'err');toast(j.name+' failed. See Activity.');afterRun(done)})
     [j.fn]();
 }
-function afterRun(done){loadSettings(function(){loadPreview()});if(done)done()}
+function afterRun(done){loadSettings(function(){loadPreview();loadExceptions()});if(done)done()}
 $('btn-all').onclick=function(){
   var b=$('btn-all');b.disabled=true;
   JOBS.forEach(function(j){running[j.id]=true});renderJobs();renderBanner();log('Running everything…','info');
@@ -537,6 +547,44 @@ function setFilter(chg){onlyChanges=chg;$('f-all').setAttribute('aria-pressed',!
 $('f-all').onclick=function(){setFilter(false)};$('f-chg').onclick=function(){setFilter(true)};
 function setRange(n){range=n;$('r-7').setAttribute('aria-pressed',n===7);$('r-14').setAttribute('aria-pressed',n===14);loadPreview()}
 $('r-7').onclick=function(){setRange(7)};$('r-14').onclick=function(){setRange(14)};
+
+/* ============================================================ exceptions */
+var excRange=60,exc=null;
+function loadExceptions(){
+  var box=$('exceptions');box.textContent='';
+  var s=el('div','evs');for(var i=0;i<3;i++)s.appendChild(el('div','skel'));box.appendChild(s);
+  google.script.run
+    .withSuccessHandler(function(r){exc=r;renderExceptions()})
+    .withFailureHandler(function(e){exc={error:e.message};renderExceptions()})
+    .getExceptions(excRange);
+}
+function renderExceptions(){
+  var box=$('exceptions');box.textContent='';var badge=$('exc-badge');
+  if(!exc)return;
+  if(exc.error){badge.hidden=true;box.appendChild(el('div','empty',exc.error));return}
+  badge.textContent=exc.count;badge.hidden=!exc.count;badge.style.background='var(--accent-soft)';badge.style.color='var(--accent)';
+  if(!exc.count){
+    var e0=el('div','empty');e0.appendChild(el('div','','No exceptions in the next '+exc.range+' days.'));
+    var h=el('div','hint','Add #exception or a tag like #recreation to an event’s title or description to see it here.');h.style.marginTop='6px';e0.appendChild(h);box.appendChild(e0);return;
+  }
+  exc.days.forEach(function(d){
+    var day=el('div','day'),h=el('div','day-h',d.label);day.appendChild(h);
+    var list=el('div','evs');
+    d.events.forEach(function(e){
+      var r=el('div','ev'+(e.past?' past':''));
+      var bar=el('div','bar-c'+(e.color==='NONE'?' none':''));if(e.color!=='NONE')bar.style.background=colour(e.color).h;
+      r.appendChild(bar);r.appendChild(el('div','ev-time',e.time));
+      var main=el('div','ev-main'),t=el('div','ev-title',e.title);t.title=e.title;
+      main.appendChild(t);main.appendChild(el('div','ev-why',e.reason));r.appendChild(main);
+      var tag=el('span','chg',e.kind);tag.style.background='var(--accent-soft)';tag.style.color='var(--accent)';r.appendChild(tag);
+      list.appendChild(r);
+    });
+    day.appendChild(list);box.appendChild(day);
+  });
+}
+function setExcRange(n){excRange=n;[30,60,90].forEach(function(v){$('x-'+v).setAttribute('aria-pressed',v===n)});loadExceptions()}
+$('x-30').onclick=function(){setExcRange(30)};$('x-60').onclick=function(){setExcRange(60)};$('x-90').onclick=function(){setExcRange(90)};
+$('btn-exc').onclick=loadExceptions;
 
 /* ============================================================ colour popover */
 var popFor=null;
@@ -760,7 +808,7 @@ function fitStickyOffset(){document.documentElement.style.setProperty('--topH',d
 window.addEventListener('resize',fitStickyOffset);fitStickyOffset();
 setInterval(renderJobs,60000);
 showTab(recall('cm-tab')||'schedule');
-loadSettings(function(){loadPreview()});
+loadSettings(function(){loadPreview();loadExceptions()});
 </script>
 </body>
 </html>
