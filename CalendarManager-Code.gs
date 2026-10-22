@@ -68,20 +68,24 @@ function mergeWords_(a, b) {
 // One-off upgrade of rules saved before version 2: add the event words to the
 // blue rule and add a yellow Recreation rule. Later edits in the UI are kept.
 function upgradeRules_(saved) {
-  if ((saved.rulesVersion || 0) >= 2) return;
+  if ((saved.rulesVersion || 0) >= 3) return;
+  // Version 3: lunch is always yellow (an older saved setting had it grey)
+  saved.rules.forEach(function(r) { if (r.id === 'lunch') r.color = 'YELLOW'; });
+  saved.lunch = Object.assign(saved.lunch || {}, { color: 'YELLOW' });
+  if ((saved.rulesVersion || 0) >= 2) { saved.rulesVersion = 3; return; }
   var nm = saved.rules.filter(function(r) { return r.id === 'nonmeeting'; })[0];
   if (nm) { nm.keywords = mergeWords_(nm.keywords, EVENT_WORDS_); nm.guests = true; }
   if (!saved.rules.some(function(r) { return r.id === 'recreation'; })) {
     saved.rules.push({ id:'recreation', name:'Recreation', keywords:RECREATION_WORDS_, color:'YELLOW', guests:true });
   }
-  saved.rulesVersion = 2;
+  saved.rulesVersion = 3;
 }
 
 function getDefaultConfig_() {
   var def = getDefaultConfigBase_();
   def.rules = legacyRules_(def);
   def.rules.forEach(function(r) { if (r.id === 'nonmeeting') r.keywords = mergeWords_(r.keywords, EVENT_WORDS_); });
-  def.rulesVersion = 2;
+  def.rulesVersion = 3;
   return def;
 }
 
