@@ -13,6 +13,7 @@
 
 var CONFIG_KEY    = 'calendarManagerConfig';
 var LASTRUN_KEY   = 'calendarManagerLastRun';
+var LASTMSG_KEY   = 'calendarManagerLastMsg';
 var SLACKSET_KEY  = 'calendarManagerSlackSet';   // text of the last status the script set
 
 // Google Calendar's 11 named colours (for nearest-match fallback on events you don't own)
@@ -110,10 +111,20 @@ function getLastRuns_() {
   var raw = PropertiesService.getUserProperties().getProperty(LASTRUN_KEY);
   return raw ? JSON.parse(raw) : {};
 }
-function setLastRun_(key) {
+function getLastMsgs_() {
+  var raw = PropertiesService.getUserProperties().getProperty(LASTMSG_KEY);
+  return raw ? JSON.parse(raw) : {};
+}
+function setLastMsg_(key, msg) {
+  var lm = getLastMsgs_();
+  lm[key] = msg;
+  PropertiesService.getUserProperties().setProperty(LASTMSG_KEY, JSON.stringify(lm));
+}
+function setLastRun_(key, msg) {
   var lr = getLastRuns_();
   lr[key] = new Date().toISOString();
   PropertiesService.getUserProperties().setProperty(LASTRUN_KEY, JSON.stringify(lr));
+  if (msg !== undefined) setLastMsg_(key, msg);
 }
 
 // ─── WEB APP ──────────────────────────────────────────────────────────────────
@@ -143,6 +154,7 @@ function testRun() {
 function getSettingsForUI() {
   var cfg = loadConfig_();
   cfg._lastRuns = getLastRuns_();
+  cfg._lastMsgs = getLastMsgs_();
   return cfg;
 }
 
@@ -155,6 +167,7 @@ function saveSettingsFromUI(data) {
   if (data.keywords) cfg.keywords = Object.assign(cfg.keywords, data.keywords);
   if (data.colors)   cfg.colors   = Object.assign(cfg.colors,   data.colors);
   if (data.lunch)    cfg.lunch    = Object.assign(cfg.lunch,    data.lunch);
+  if (data.workHours) cfg.workHours = Object.assign(cfg.workHours, data.workHours);
   saveConfig_(cfg);
   return { ok: true };
 }
@@ -361,7 +374,7 @@ function runBusySync() {
     }
   });
 
-  setLastRun_('busy');
+  setLastRun_('busy', res.created + ' added · ' + res.deleted + ' removed · ' + res.skipped + ' skipped');
   return res;
 }
 
@@ -381,11 +394,7 @@ function runColorCoding() {
     // all-day events, working location, out-of-office, birthdays etc. are left alone
     if (!isTimed_(ev) || (ev.eventType && ev.eventType !== 'default' && ev.eventType !== 'focusTime')) { res.skipped++; return; }
 
-    var cls;
-    if (isSyncedBusy_(ev))        cls = { color:cfg.colors.hold, reason:'synced block' };
-    else if (isManagedLunch_(ev)) cls = { color:cfg.lunch.color, reason:'managed lunch block' };
-    else cls = classify_(titleOf_(ev).toLowerCase(), attendeeEmails_(ev), cfg, hasConferenceLink_(ev), hasException_(ev));
-
+    var cls = classifyEvent_(ev, cfg);
     var want = colorId_(cls.color);
     if ((ev.colorId || '') === want) { res.unchanged++; return; }
 
@@ -398,8 +407,48 @@ function runColorCoding() {
     }
   });
 
-  setLastRun_('colour');
+  setLastRun_('colour', res.updated + ' recoloured · ' + res.unchanged + ' already right');
   return res;
+}
+
+// Colour category for one event (shared by the colour job and the UI preview).
+function classifyEvent_(ev, cfg) {
+  if (isSyncedBusy_(ev))   return { cat:'hold',  color:cfg.colors.hold, reason:'synced Busy block' };
+  if (isManagedLunch_(ev)) return { cat:'lunch', color:cfg.lunch.color, reason:'managed lunch block' };
+  return classify_(titleOf_(ev).toLowerCase(), attendeeEmails_(ev), cfg, hasConferenceLink_(ev), hasException_(ev));
+}
+
+// Dry run for the UI: how the next 7 days WOULD be coloured, with nothing written.
+function getPreview() {
+  var cfg = loadConfig_(), tz = Session.getScriptTimeZone();
+  var now = new Date();
+  var from = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  var to = new Date(from.getTime() + 7*86400000);
+  var events;
+  try { events = listEvents_(cfg.workCalendarId, from, to); }
+  catch(e) { return { error:'Cannot read work calendar. (' + e.message + ')' }; }
+
+  var days = [], byKey = {};
+  events.forEach(function(ev) {
+    if (!isTimed_(ev) || (ev.eventType && ev.eventType !== 'default' && ev.eventType !== 'focusTime')) return;
+    var s = new Date(ev.start.dateTime), e = new Date(ev.end.dateTime);
+    var key = Utilities.formatDate(s, tz, 'yyyy-MM-dd');
+    if (!byKey[key]) {
+      byKey[key] = { key:key, label:Utilities.formatDate(s, tz, 'EEEE d MMM'), events:[] };
+      days.push(byKey[key]);
+    }
+    var cls = classifyEvent_(ev, cfg);
+    byKey[key].events.push({
+      time:   Utilities.formatDate(s, tz, 'HH:mm') + '–' + Utilities.formatDate(e, tz, 'HH:mm'),
+      title:  titleOf_(ev) || '(no title)',
+      color:  resolveColorName_(cls.color),
+      cat:    cls.cat,
+      reason: cls.reason,
+      change: (ev.colorId || '') !== colorId_(cls.color),
+      past:   e.getTime() < now.getTime()
+    });
+  });
+  return { days:days, today:Utilities.formatDate(now, tz, 'yyyy-MM-dd') };
 }
 
 // STRUCTURE-FIRST CLASSIFICATION
@@ -417,29 +466,29 @@ function classify_(title, emails, cfg, hasConf, exception) {
   // 1. Personal-intent blocks. 'hold' words only count when nobody else is invited,
   //    so a lunch *meeting* is coloured by its attendees like any other meeting.
   if (!exception) {
-    if (kw_(title, k.focus))                     return { color:c.focus,    reason:'focus keyword' };
-    if (!emails.length && kw_(title, k.hold))    return { color:c.hold,     reason:'hold keyword (solo)' };
-    if (kw_(title, k.reminder))                  return { color:c.reminder, reason:'reminder keyword' };
+    if (kw_(title, k.focus))                     return { cat:'focus', color:c.focus,    reason:'focus keyword' };
+    if (!emails.length && kw_(title, k.hold))    return { cat:'hold', color:c.hold,     reason:'hold keyword (solo)' };
+    if (kw_(title, k.reminder))                  return { cat:'reminder', color:c.reminder, reason:'reminder keyword' };
   }
 
   // 2. Teams/Zoom link → external (we only use those with outside parties)
-  if (hasConf) return { color:c.external, reason:'Teams/Zoom link → external' };
+  if (hasConf) return { cat:'external', color:c.external, reason:'Teams/Zoom link → external' };
 
   // 3. Has attendees → MEETING. Classify by WHO.
   if (emails.length) {
     var ext = 0, intl = 0;
     emails.forEach(function(e){ if (e.indexOf('@'+cfg.workDomain) !== -1) intl++; else ext++; });
-    if (ext)  return { color:c.external, reason:ext +' external attendee(s)' };
-    return { color:c.team, reason:intl +' DML attendee(s)' };
+    if (ext)  return { cat:'external', color:c.external, reason:ext +' external attendee(s)' };
+    return { cat:'team', color:c.team, reason:intl +' DML attendee(s)' };
   }
 
   // 4. No attendees → solo block. Title keywords are now safe.
   if (!exception) {
-    if (kw_(title, k.priority))   return { color:c.priority,   reason:'priority keyword (solo)' };
-    if (kw_(title, k.nonmeeting)) return { color:c.nonmeeting, reason:'non-meeting keyword (solo)' };
+    if (kw_(title, k.priority))   return { cat:'priority', color:c.priority,   reason:'priority keyword (solo)' };
+    if (kw_(title, k.nonmeeting)) return { cat:'nonmeeting', color:c.nonmeeting, reason:'non-meeting keyword (solo)' };
   }
 
-  return { color:c.default, reason: exception ? 'solo, #exception' : 'solo, no keyword match' };
+  return { cat:'default', color:c.default, reason: exception ? 'solo, #exception' : 'solo, no keyword match' };
 }
 
 // Whole-token keyword match. A keyword matches only if it appears as a complete
@@ -463,7 +512,7 @@ function kw_(text, str) {
 function runLunchScheduler() {
   var cfg = loadConfig_(), L = cfg.lunch;
   var res = { scheduled:0, moved:0, skipped:0, log:[] };
-  if (!L.enabled) { setLastRun_('lunch'); return { scheduled:0, moved:0, skipped:0, log:[{type:'skip',msg:'Lunch scheduling is disabled.'}] }; }
+  if (!L.enabled) { setLastRun_('lunch', 'Disabled'); return { scheduled:0, moved:0, skipped:0, log:[{type:'skip',msg:'Lunch scheduling is disabled.'}] }; }
 
   var now = new Date(), nowMs = now.getTime(), days = parseInt(L.daysAhead) || 7, dur = 60*60000;
   var ws = toMins_(L.windowStart), we = toMins_(L.windowEnd);
@@ -530,7 +579,7 @@ function runLunchScheduler() {
     }
   }
 
-  setLastRun_('lunch');
+  setLastRun_('lunch', res.scheduled + ' added · ' + res.moved + ' moved · ' + res.skipped + ' no free slot');
   return res;
 }
 
@@ -559,6 +608,12 @@ function findSlot_(winS, winE, dur, busy, prefer) {
 // ─── SLACK STATUS ───────────────────────────────────────────────────────────────
 
 function updateSlackStatus() {
+  var r = slackSync_();
+  setLastMsg_('slack', r.error ? 'Error: ' + r.error : r.msg);
+  return r;
+}
+
+function slackSync_() {
   var cfg = loadConfig_();
   if (!cfg.slackToken) return { error:'No Slack token in Settings.' };
   var now = new Date(), soon = new Date(now.getTime()+60000);
