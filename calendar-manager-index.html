@@ -134,7 +134,7 @@ input.wide{width:220px}input.kw{width:280px}
     <!-- BUSY -->
     <div id="panel-busy" class="panel">
       <div class="ptitle">Busy sync</div>
-      <div class="psub">Mirrors Play to your DM work calendar. Weekdays only, no all-day events, no declined events. Recurring events sync per occurrence.</div>
+      <div class="psub">Mirrors Play to your DM work calendar. Weekdays only, no all-day events, no declined events. Recurring events sync per occurrence, and blocks are removed if the original event is deleted, declined or moved.</div>
       <div class="stat-row">
         <div class="stat"><div class="sval" id="bs-created">–</div><div class="slbl">Created this run</div></div>
         <div class="stat"><div class="sval" id="bs-skipped">–</div><div class="slbl">Skipped</div></div>
@@ -160,7 +160,7 @@ input.wide{width:220px}input.kw{width:280px}
       <div class="card">
         <div class="ctitle">Per-event exceptions</div>
         <div style="font-size:13px;color:var(--muted);line-height:1.6">
-          Add <code style="background:var(--bg);padding:1px 6px;border-radius:4px;font-family:'SF Mono',monospace">#exception</code> anywhere in an event's description to skip keyword rules for that one event and colour it purely by who's attending instead. Useful for a lunch <em>meeting</em> that would otherwise be caught by the "lunch" keyword and turn grey.
+          Add <code style="background:var(--bg);padding:1px 6px;border-radius:4px;font-family:'SF Mono',monospace">#exception</code> anywhere in an event's description to skip keyword rules for that one event and colour it purely by who's attending instead. Hold keywords like "lunch" already only apply to events with no guests, so a lunch <em>meeting</em> is coloured by who's attending without needing this.
         </div>
       </div>
       <div class="progress"><div class="pfill" id="color-prog"></div></div>
@@ -211,7 +211,7 @@ input.wide{width:220px}input.kw{width:280px}
         <div class="row"><div class="rlabel">Any other meeting</div><span>📅 In a meeting: [name]</span></div>
         <div class="row"><div class="rlabel">No meeting (work hours)</div><span style="color:var(--muted)">Status cleared</span></div>
       </div>
-      <div class="card"><div class="ctitle">Automatic updates</div><div style="font-size:13px;color:var(--muted);line-height:1.7">Run <strong>installTriggers()</strong> once in the Apps Script editor to update every 5 minutes automatically.</div></div>
+      <div class="card"><div class="ctitle">Automatic updates</div><div style="font-size:13px;color:var(--muted);line-height:1.7">Run <strong>installTriggers()</strong> once in the Apps Script editor to update every 5 minutes automatically. A status you set yourself in Slack is never overwritten.</div></div>
       <div class="btn-row">
         <button class="btn btn-primary" onclick="doSlack()">⚡ Sync now</button>
         <button class="btn" onclick="clearSlack()">✕ Clear status</button>
@@ -269,7 +269,7 @@ var CATS=[
   {k:'nonmeeting',l:'Non-meeting',s:'Events, webinars, talks'},
   {k:'focus',l:'Focus time',s:'Focus / deep work blocks'},
   {k:'priority',l:'Priority',s:'Flights, key meetings'},
-  {k:'hold',l:'Hold / Busy',s:'Placeholder blocks'},
+  {k:'hold',l:'Hold / Busy',s:'Placeholder blocks (solo only)'},
   {k:'reminder',l:'Reminder',s:'Reminder events'},
   {k:'personal',l:'Personal',s:'Synced from Play'}
 ];
@@ -314,14 +314,14 @@ function run(fn,btnId,logId,progId,onOk){var btn=document.getElementById(btnId);
 
 function emit(logId,res){(res.log||[]).forEach(function(l){log(logId,l.msg,l.type==='ok'?'lok':l.type==='err'?'lerr':'')})}
 
-function doBusy(){log('busy-log','Reading Play calendar...','linfo');run('runBusySync','btn-busy','busy-log','busy-prog',function(res){document.getElementById('bs-created').textContent=res.created;document.getElementById('bs-skipped').textContent=res.skipped;emit('busy-log',res);log('busy-log','Done — '+res.created+' created, '+res.skipped+' skipped.','lok');load()})}
-function doColour(){log('color-log','Classifying events...','linfo');run('runColorCoding','btn-color','color-log','color-prog',function(res){emit('color-log',res);log('color-log','Done — '+res.updated+' coloured, '+res.skipped+' skipped.','lok');load()})}
+function doBusy(){log('busy-log','Reading Play calendar...','linfo');run('runBusySync','btn-busy','busy-log','busy-prog',function(res){document.getElementById('bs-created').textContent=res.created;document.getElementById('bs-skipped').textContent=res.skipped;emit('busy-log',res);log('busy-log','Done — '+res.created+' created, '+res.deleted+' removed, '+res.skipped+' skipped.','lok');load()})}
+function doColour(){log('color-log','Classifying events...','linfo');run('runColorCoding','btn-color','color-log','color-prog',function(res){emit('color-log',res);log('color-log','Done — '+res.updated+' recoloured, '+res.unchanged+' already correct, '+res.skipped+' skipped.','lok');load()})}
 function doLunch(){log('lunch-log','Scanning for lunch slots...','linfo');run('runLunchScheduler','btn-lunch','lunch-log','lunch-prog',function(res){emit('lunch-log',res);log('lunch-log','Done — '+res.scheduled+' created, '+res.moved+' moved, '+res.skipped+' skipped.','lok');load()})}
 
 function doSlack(){log('slack-log','Checking calendar...','linfo');google.script.run.withSuccessHandler(function(res){if(res.error){log('slack-log',res.error,'lerr');return}log('slack-log',res.msg,'lok');load()}).withFailureHandler(function(e){log('slack-log','Error: '+e.message,'lerr')}).updateSlackStatus()}
 function clearSlack(){log('slack-log','Clearing...','linfo');google.script.run.withSuccessHandler(function(res){if(res.error){log('slack-log',res.error,'lerr');return}log('slack-log',res.msg,'lok')}).withFailureHandler(function(e){log('slack-log','Error: '+e.message,'lerr')}).clearSlackStatus()}
 
-function doAll(){var btn=document.getElementById('btn-all');btn.disabled=true;log('all-log','Running all automations...','linfo');prog('all-prog',16000);google.script.run.withSuccessHandler(function(out){done('all-prog');btn.disabled=false;summarise('Busy sync',out.busy,function(r){return r.created+' created, '+r.skipped+' skipped'});summarise('Lunch',out.lunch,function(r){return r.scheduled+' created, '+r.moved+' moved'});summarise('Colour coding',out.colour,function(r){return r.updated+' coloured'});summarise('Slack',out.slack,function(r){return r.msg||'updated'});log('all-log','All done.','lok');load()}).withFailureHandler(function(e){done('all-prog');btn.disabled=false;log('all-log','Error: '+e.message,'lerr')}).runAll()}
+function doAll(){var btn=document.getElementById('btn-all');btn.disabled=true;log('all-log','Running all automations...','linfo');prog('all-prog',16000);google.script.run.withSuccessHandler(function(out){done('all-prog');btn.disabled=false;summarise('Busy sync',out.busy,function(r){return r.created+' created, '+r.deleted+' removed, '+r.skipped+' skipped'});summarise('Lunch',out.lunch,function(r){return r.scheduled+' created, '+r.moved+' moved'});summarise('Colour coding',out.colour,function(r){return r.updated+' recoloured, '+r.unchanged+' already correct'});summarise('Slack',out.slack,function(r){return r.msg||'updated'});log('all-log','All done.','lok');load()}).withFailureHandler(function(e){done('all-prog');btn.disabled=false;log('all-log','Error: '+e.message,'lerr')}).runAll()}
 function summarise(name,res,fmt){if(!res){log('all-log',name+': no result','lerr');return}if(res.error){log('all-log',name+': '+res.error,'lerr');return}log('all-log',name+': '+fmt(res),'lok')}
 
 // saves
