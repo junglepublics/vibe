@@ -126,6 +126,18 @@ function doGet() {
 
 function setup() { CalendarApp.getAllCalendars(); Logger.log('Authorised. Now deploy as web app.'); }
 
+// Run this from the editor to try the calendar jobs and read results in the Execution log.
+// It makes real changes (creates/removes Busy + Lunch blocks, recolours events).
+function testRun() {
+  [['Busy sync', runBusySync], ['Colour coding', runColorCoding], ['Lunch', runLunchScheduler]].forEach(function(j) {
+    var r = j[1]();
+    Logger.log('=== ' + j[0] + ' ===');
+    if (r.error) { Logger.log('ERROR: ' + r.error); return; }
+    Logger.log(JSON.stringify({ created:r.created, deleted:r.deleted, updated:r.updated, unchanged:r.unchanged, scheduled:r.scheduled, moved:r.moved, skipped:r.skipped }));
+    (r.log || []).forEach(function(l) { if (l.type !== 'skip') Logger.log((l.type === 'err' ? 'ERR  ' : '     ') + l.msg); });
+  });
+}
+
 // ─── PUBLIC API (UI calls these) ──────────────────────────────────────────────
 
 function getSettingsForUI() {
