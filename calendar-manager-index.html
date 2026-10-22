@@ -178,6 +178,11 @@ label.field{display:block;font-weight:600;font-size:13px;margin-bottom:5px}
 .guest-row{display:flex;align-items:center;gap:12px;margin-top:10px}
 .guest-row .lbl{font-size:13px}
 .guest-row .lbl small{display:block;color:var(--muted);font-size:12px}
+.tag-row{display:flex;align-items:center;gap:6px;margin-top:10px;flex-wrap:wrap}
+.tag-l{font-size:13px;font-weight:600;margin-right:2px}
+.tag-pre{color:var(--muted);font-weight:700}
+.tag-row input{width:150px;min-height:34px;padding:4px 9px}
+.tag-h{font-size:12px;color:var(--muted);flex:1 1 220px}
 .lock{font-size:12px;color:var(--muted);display:inline-flex;align-items:center;gap:5px}
 .add-rule{width:100%;border:2px dashed var(--border-strong);background:transparent;border-radius:var(--r);min-height:52px;color:var(--muted);font-weight:700;margin-bottom:18px}
 .add-rule:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
@@ -284,7 +289,8 @@ body.has-save .toast{bottom:84px}
   <div class="card">
     <h3>Tips</h3>
     <div class="hint" style="font-size:13px;line-height:1.7">
-      Words match whole words only: <i>lunch</i> matches “Lunch with Sam” but not “Launchpad”. Separate words with a comma or Enter.<br>
+      <b>Force a colour yourself:</b> put a rule's tag, like <code>#recreation</code> or <code>#events</code>, in an event's title or description. It beats every keyword and guest rule. Tags are shown on each rule below.<br>
+      Words match whole words only:<i>lunch</i> matches “Lunch with Sam” but not “Launchpad”. Separate words with a comma or Enter.<br>
       Add <code>#exception</code> to an event's description to skip every rule for that event (Lunch still applies).<br>
       “None” leaves the event in your calendar's own colour.
     </div>
@@ -612,6 +618,13 @@ function renderRules(){
     lbl.appendChild(el('small','',r.guests?'Applies to every event with these words, whoever is on the invite':'Only for your own events with nobody else invited'));
     cb.addEventListener('change',function(){lbl.querySelector('small').textContent=cb.checked?'Applies to every event with these words, whoever is on the invite':'Only for your own events with nobody else invited'});
     gr.appendChild(sc);gr.appendChild(lbl);body.appendChild(gr);
+    var tr=el('div','tag-row'),tl=el('label','',null);tl.textContent='Tag';tl.className='tag-l';
+    var ti=el('input');ti.type='text';ti.value=r.tag||'';ti.maxLength=30;ti.placeholder='tag';ti.setAttribute('aria-label','Tag for '+r.name);
+    ti.oninput=function(){var v=ti.value.toLowerCase().replace(/^#/,'').replace(/[^a-z0-9_]/g,'');if(v!==ti.value)ti.value=v;r.tag=v;markDirty();runTester()};
+    var th=el('span','tag-h','');
+    function tagHint(){th.textContent=r.tag?'Put #'+r.tag+' in an event’s title or description to force this colour.':'No tag set.'}
+    tagHint();ti.addEventListener('input',tagHint);
+    var pre=el('span','tag-pre','#');tr.appendChild(tl);tr.appendChild(pre);tr.appendChild(ti);tr.appendChild(th);body.appendChild(tr);
     if(isLunch){var lk=el('div','lock','🔒 Always on: lunch is always this colour, even if marked #exception. Lunch blocks are added on the Lunch tab.');lk.style.marginTop='8px';body.appendChild(lk)}
     main.appendChild(body);card.appendChild(main);box.appendChild(card);
   });
@@ -652,6 +665,10 @@ function runTester(){
   if(!title){res.appendChild(el('span','muted','Type a title above.'));return}
   var who=$('tt-who').value,conf=$('tt-conf').checked,solo=who==='solo',out=null;
   var exc=/#exception/.test(title);
+  (cfg.rules||[]).forEach(function(r){
+    if(out||!r.tag)return;
+    if(new RegExp('(^|[^a-z0-9_])#'+r.tag+'([^a-z0-9_]|$)','i').test(title))out={c:r.color,why:'#'+r.tag+' tag, so the rule “'+r.name+'”'};
+  });
   (cfg.rules||[]).forEach(function(r){
     if(out)return;if(exc&&r.id!=='lunch')return;if(!r.guests&&!solo)return;
     var h=matchKw(title,r.keywords);if(h)out={c:r.color,why:'“'+h+'” matches the rule “'+r.name+'”'};

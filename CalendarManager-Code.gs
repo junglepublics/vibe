@@ -56,6 +56,19 @@ function legacyRules_(cfg) {
 var EVENT_WORDS_      = 'workshop, workshops, seminar, seminars, webinar, webinars, conference, conferences, summit, symposium, masterclass, keynote, lecture';
 var RECREATION_WORDS_ = 'dinner, drinks, party, birthday, gym, yoga, run, climbing, football, tennis, swim, concert, cinema, movie, hike, brunch';
 
+// Hashtag that forces a rule's colour when it appears in an event's title or description
+// (for example #recreation). Defaults to a short name; editable per rule in the UI.
+var DEFAULT_TAGS_ = { lunch:'lunch', focus:'focus', hold:'hold', reminder:'reminder', priority:'priority', nonmeeting:'events', recreation:'recreation' };
+function cleanTag_(t) { return String(t || '').toLowerCase().replace(/^#/, '').replace(/[^a-z0-9_]/g, '').slice(0, 30); }
+function normRule_(r, i) {
+  var id = r.id || ('custom' + i), name = r.name || 'Rule';
+  return { id:id, name:name, keywords:r.keywords || '', color:resolveColorName_(r.color), guests:!!r.guests,
+           tag: cleanTag_(r.tag !== undefined ? r.tag : (DEFAULT_TAGS_[id] || name)) };
+}
+function hasTag_(text, tag) {
+  return !!tag && new RegExp('(^|[^a-z0-9_])#' + tag + '([^a-z0-9_]|$)', 'i').test(text || '');
+}
+
 function mergeWords_(a, b) {
   var out = [], seen = {};
   (String(a || '') + ',' + String(b || '')).split(',').forEach(function(w) {
@@ -85,6 +98,7 @@ function getDefaultConfig_() {
   var def = getDefaultConfigBase_();
   def.rules = legacyRules_(def);
   def.rules.forEach(function(r) { if (r.id === 'nonmeeting') r.keywords = mergeWords_(r.keywords, EVENT_WORDS_); });
+  def.rules = def.rules.map(normRule_);
   def.rulesVersion = 3;
   return def;
 }
@@ -153,11 +167,10 @@ function loadConfig_() {
       saved.lunch.color = nearestPaletteName_(saved.lunch.color);
     }
     if (!Array.isArray(saved.rules)) saved.rules = legacyRules_(saved);
-    saved.rules = saved.rules.map(function(r, i) {
-      return { id: r.id || ('custom' + i), name: r.name || 'Rule', keywords: r.keywords || '',
-               color: resolveColorName_(r.color), guests: !!r.guests };
-    });
+    saved.rules = saved.rules.map(normRule_);
+
     upgradeRules_(saved);
+    saved.rules = saved.rules.map(normRule_);
     return Object.assign(def, saved);
   } catch(e) {
     return def;
@@ -238,7 +251,7 @@ function saveSettingsFromUI(data) {
       while (seen[id]) id += '_';
       seen[id] = true;
       return { id:id, name:String(r.name || 'Rule').slice(0, 40), keywords:String(r.keywords || ''),
-               color:resolveColorName_(r.color), guests:!!r.guests };
+               color:resolveColorName_(r.color), guests:!!r.guests, tag:cleanTag_(r.tag) };
     });
     // Keep the older single-purpose settings in step with the rules that drive them
     cfg.rules.forEach(function(r) {
@@ -507,7 +520,7 @@ function runColorCoding() {
 function classifyEvent_(ev, cfg) {
   if (isSyncedBusy_(ev))   return { cat:'hold',  color:cfg.colors.hold, reason:'synced Busy block' };
   if (isManagedLunch_(ev)) return { cat:'lunch', color:cfg.lunch.color, reason:'managed lunch block' };
-  return classify_(titleOf_(ev).toLowerCase(), attendeeEmails_(ev), cfg, hasConferenceLink_(ev), hasException_(ev));
+  return classify_(titleOf_(ev).toLowerCase(), attendeeEmails_(ev), cfg, hasConferenceLink_(ev), hasException_(ev), descOf_(ev).toLowerCase());
 }
 
 // Dry run for the UI: how the next 7 days WOULD be coloured, with nothing written.
@@ -553,10 +566,16 @@ function getPreview(nDays) {
 //    external, DML-only guests is team, and a solo event with no rule match is default.
 // hasConf = event has a Teams/Zoom link (we never use those internally, so it's external).
 // exception = event description contains #exception, so all rules except Lunch are skipped.
-function classify_(title, emails, cfg, hasConf, exception) {
+function classify_(title, emails, cfg, hasConf, exception, desc) {
   var c = cfg.colors, solo = !emails.length;
-
   var rules = cfg.rules || [];
+
+  // A hashtag such as #recreation in the title or description beats everything else.
+  var tagText = (title || '') + ' ' + (desc || '');
+  for (var t = 0; t < rules.length; t++) {
+    if (hasTag_(tagText, rules[t].tag)) return { cat:rules[t].name, color:rules[t].color, reason:'#' + rules[t].tag + ' → ' + rules[t].name };
+  }
+
   for (var i = 0; i < rules.length; i++) {
     var r = rules[i];
     if (exception && r.id !== 'lunch') continue;
