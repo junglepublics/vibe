@@ -13,6 +13,7 @@
 
 var CONFIG_KEY    = 'calendarManagerConfig';
 var LASTRUN_KEY   = 'calendarManagerLastRun';
+var SLACKSET_KEY  = 'calendarManagerSlackSet';   // text of the last status the script set
 
 // Google Calendar's 11 named colours (for nearest-match fallback on events you don't own)
 var GC_PALETTE_ = [
@@ -319,10 +320,23 @@ function runColorCoding() {
       return;
     }
 
+    // Our own lunch block always uses the lunch colour (never the 'lunch' hold keyword)
+    if (isManagedLunch_(ev)) {
+      try {
+        var lc = setEventColor_(cfg.workCalendarId, ev, cfg.lunch.color);
+        res.updated++;
+        res.log.push({type:'ok', msg:'Lunch → '+lc+' [managed lunch block]'});
+      } catch(e) {
+        res.log.push({type:'err', msg:'Lunch — '+e.message});
+      }
+      return;
+    }
+
     var title = ev.getTitle().toLowerCase();
+    var exception = hasException_(ev);
     var emails = attendeeEmails_(cfg.workCalendarId, ev, me);
     var hasConf = hasConferenceLink_(cfg.workCalendarId, ev);
-    var cls = classify_(title, emails, cfg, hasConf);
+    var cls = classify_(title, emails, cfg, hasConf, exception);
 
     try {
       var applied = setEventColor_(cfg.workCalendarId, ev, cls.color);
@@ -355,22 +369,34 @@ function attendeeEmails_(calendarId, ev, me) {
   return out;
 }
 
+// '#exception' anywhere in an event's description turns off all keyword rules
+// for that event, so it is coloured purely by who is attending.
+function hasException_(ev) {
+  try { return /#exception/i.test(ev.getDescription() || ''); } catch(e) { return false; }
+}
+
+// The Lunch block this script creates (not a lunch *meeting* someone else made).
+function isManagedLunch_(ev) {
+  return ev.getTitle() === 'Lunch' && (ev.getDescription() || '').indexOf('lunch-block') !== -1;
+}
+
 // STRUCTURE-FIRST CLASSIFICATION
-// The reliable signal for meeting-type is WHO is in it, not what it's called.
+// Reliable signal for meeting-type is WHO is in it, not what it's called.
 // So: a few unambiguous intent keywords (focus, hold, reminder) win first;
 // then anything WITH attendees is a meeting, classified by participants
 // (external beats team); only events WITHOUT attendees fall back to the
 // remaining keyword categories (priority, non-meeting) and finally default.
-// STRUCTURE-FIRST CLASSIFICATION
-// Reliable signal for meeting-type is WHO is in it, not what it's called.
 // hasConf = event has a Teams/Zoom link (we never use those internally, so it's external).
-function classify_(title, emails, cfg, hasConf) {
+// exception = event description contains #exception, so all keyword rules are skipped.
+function classify_(title, emails, cfg, hasConf, exception) {
   var k = cfg.keywords, c = cfg.colors;
 
   // 1. Unambiguous personal-intent blocks — override even if attendees exist
-  if (kw_(title, k.focus))    return { color:c.focus,    reason:'focus keyword' };
-  if (kw_(title, k.hold))     return { color:c.hold,     reason:'hold keyword' };
-  if (kw_(title, k.reminder)) return { color:c.reminder, reason:'reminder keyword' };
+  if (!exception) {
+    if (kw_(title, k.focus))    return { color:c.focus,    reason:'focus keyword' };
+    if (kw_(title, k.hold))     return { color:c.hold,     reason:'hold keyword' };
+    if (kw_(title, k.reminder)) return { color:c.reminder, reason:'reminder keyword' };
+  }
 
   // 2. Teams/Zoom link → external (we only use those with outside parties)
   if (hasConf) return { color:c.external, reason:'Teams/Zoom link → external' };
@@ -384,10 +410,12 @@ function classify_(title, emails, cfg, hasConf) {
   }
 
   // 4. No attendees → solo block. Title keywords are now safe.
-  if (kw_(title, k.priority))   return { color:c.priority,   reason:'priority keyword (solo)' };
-  if (kw_(title, k.nonmeeting)) return { color:c.nonmeeting, reason:'non-meeting keyword (solo)' };
+  if (!exception) {
+    if (kw_(title, k.priority))   return { color:c.priority,   reason:'priority keyword (solo)' };
+    if (kw_(title, k.nonmeeting)) return { color:c.nonmeeting, reason:'non-meeting keyword (solo)' };
+  }
 
-  return { color:c.default, reason:'solo, no keyword match' };
+  return { color:c.default, reason: exception ? 'solo, #exception' : 'solo, no keyword match' };
 }
 
 // Whole-token keyword match. A keyword matches only if it appears as a complete
@@ -518,26 +546,68 @@ function updateSlackStatus() {
       exp = Math.floor(cur.getEndTime().getTime()/1000);
       var isSynced = (title === 'Busy' && (cur.getDescription()||'').indexOf('synced:') === 0);
       if (kw_(low, cfg.keywords.focus))      { emoji=':headphones:'; text='In focus time'; }
-      else if (low.indexOf('lunch') !== -1)  { emoji=':bento:';      text='At lunch'; }
+      else if (isManagedLunch_(cur) || (low.indexOf('lunch') !== -1 && !hasException_(cur))) { emoji=':bento:'; text='At lunch'; }
       else if (isSynced)                     { emoji=':calendar:';   text='In a meeting'; }
       else                                   { emoji=':calendar:';   text='In a meeting: ' + truncate_(title, 90); }
     }
   }
 
   try {
-    var r = UrlFetchApp.fetch('https://slack.com/api/users.profile.set', {
-      method:'post',
-      headers:{ 'Authorization':'Bearer '+cfg.slackToken, 'Content-Type':'application/json; charset=utf-8' },
-      payload:JSON.stringify({ profile:{ status_text:text, status_emoji:emoji, status_expiration:exp } }),
+    // Never overwrite a status you set yourself in Slack. We remember the text
+    // we last set; if the current status is non-empty and differs, it's manual.
+    var g = JSON.parse(UrlFetchApp.fetch('https://slack.com/api/users.profile.get', {
+      headers:{ 'Authorization':'Bearer '+cfg.slackToken },
       muteHttpExceptions:true
-    });
-    var j = JSON.parse(r.getContentText());
+    }).getContentText());
+    if (!g.ok) return { error: slackError_(g.error, 'users.profile:read') };
+
+    var curText = (g.profile.status_text || ''), curEmoji = (g.profile.status_emoji || '');
+    var curExp  = g.profile.status_expiration || 0;
+    var last    = PropertiesService.getUserProperties().getProperty(SLACKSET_KEY);
+    var isEmpty = !curText && !curEmoji;
+    var isOurs  = last !== null && curText === last;   // compare text only: Slack may rewrite emoji codes
+
     setLastRun_('slack');
-    if (j.ok) return { ok:true, msg: text ? ('Status set: '+emoji+' '+text) : 'Status cleared (no active meeting)' };
-    var m = 'Slack error: '+j.error;
-    if (j.error === 'missing_scope') m += ' — add users.profile:write under User Token Scopes at api.slack.com/apps, reinstall, repaste token.';
-    return { error:m };
+    if (!isEmpty && !isOurs) {
+      return { ok:true, msg:'Your own Slack status ("' + truncate_(curText || curEmoji, 40) + '") left alone' };
+    }
+    if (!text && isEmpty)                  return { ok:true, msg:'No change (no active meeting)' };
+    if (text && curText === text && curExp === exp) return { ok:true, msg:'No change: ' + text };
+
+    var j = slackSetStatus_(cfg.slackToken, text, emoji, exp);
+    if (!j.ok) return { error: slackError_(j.error, 'users.profile:write') };
+    if (text) PropertiesService.getUserProperties().setProperty(SLACKSET_KEY, text);
+    else      PropertiesService.getUserProperties().deleteProperty(SLACKSET_KEY);
+    return { ok:true, msg: text ? ('Status set: '+emoji+' '+text) : 'Status cleared (no active meeting)' };
   } catch(e) { return { error:'Request failed: '+e.message }; }
+}
+
+// Used by the "Clear status" button — clears unconditionally, even a manual status.
+function clearSlackStatus() {
+  var cfg = loadConfig_();
+  if (!cfg.slackToken) return { error:'No Slack token in Settings.' };
+  try {
+    var j = slackSetStatus_(cfg.slackToken, '', '', 0);
+    if (!j.ok) return { error: slackError_(j.error, 'users.profile:write') };
+    PropertiesService.getUserProperties().deleteProperty(SLACKSET_KEY);
+    return { ok:true, msg:'Status cleared' };
+  } catch(e) { return { error:'Request failed: '+e.message }; }
+}
+
+function slackSetStatus_(token, text, emoji, exp) {
+  var r = UrlFetchApp.fetch('https://slack.com/api/users.profile.set', {
+    method:'post',
+    headers:{ 'Authorization':'Bearer '+token, 'Content-Type':'application/json; charset=utf-8' },
+    payload:JSON.stringify({ profile:{ status_text:text, status_emoji:emoji, status_expiration:exp } }),
+    muteHttpExceptions:true
+  });
+  return JSON.parse(r.getContentText());
+}
+
+function slackError_(err, scope) {
+  var m = 'Slack error: ' + err;
+  if (err === 'missing_scope') m += ' — add ' + scope + ' under User Token Scopes at api.slack.com/apps, reinstall, repaste token.';
+  return m;
 }
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
